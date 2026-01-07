@@ -57,12 +57,16 @@ function App() {
     });
 
     socket.on("game_over", (data) => {
-      if (data.timeout) {
-          setWinner("Draw (Time Out!)");
-      } else if (data.winnerId === socket.id) {
-          setWinner("Me");
+      // Logic: If the server picked a winner (even if time ran out), show it.
+      if (data.winnerId) {
+          if (data.winnerId === socket.id) {
+            setWinner("Me");
+          } else {
+            setWinner("Opponent");
+          }
       } else {
-          setWinner("Opponent");
+          // Only show Draw if NO ONE had a score (rare)
+          setWinner("Draw");
       }
       setTimer("Finished");
     });
