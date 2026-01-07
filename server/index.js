@@ -9,13 +9,13 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow connections from anywhere (Render/Vercel/Localhost)
+        origin: "*", 
         methods: ["GET", "POST"]
     }
 });
 
 const PARAGRAPHS = [
-    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees. The villagers slowly stirred, the smell of fresh bread wafting from the local bakery, signaling that breakfast was nearly ready. It was a peaceful moment, one that seemed to suspend time before the hustle and bustle of daily life took over. In these quiet seconds, the world felt perfect, a harmonious blend of nature and humanity coexisting in a delicate balance that was rarely disturbed by the chaos outside.",
+       "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees. The villagers slowly stirred, the smell of fresh bread wafting from the local bakery, signaling that breakfast was nearly ready. It was a peaceful moment, one that seemed to suspend time before the hustle and bustle of daily life took over. In these quiet seconds, the world felt perfect, a harmonious blend of nature and humanity coexisting in a delicate balance that was rarely disturbed by the chaos outside.",
 
     "Technology has revolutionized the way we communicate, breaking down geographical barriers that once isolated communities. With the click of a button, we can instantly share thoughts, images, and videos with someone on the other side of the globe. However, this convenience comes with a price, as the digital world often distracts us from the physical reality right in front of us. Finding a balance between our online presence and our real-world connections is essential for mental well-being. We must remember to look up from our screens and appreciate the beauty of the tangible world that surrounds us every single day.",
 
@@ -56,7 +56,15 @@ const PARAGRAPHS = [
     "Winter transforms the landscape into a wonderland of white, covering the ground in a soft blanket of snow. The air is crisp and cold, biting at exposed skin, while breath forms misty clouds in the atmosphere. Trees stand bare and skeletal against the grey sky, their branches accumulating layers of frost. It is a season of dormancy, where nature rests and prepares for the rebirth of spring. Despite the cold, there is warmth to be found in gathering around a fireplace, drinking hot cocoa, and enjoying the stillness that winter brings to the world."
 ];
 
-// Store Room State: { roomCode: { readyCount: 0, totalPlayers: 0 } }
+// UPDATED STATE STRUCTURE:
+// roomState = { 
+//    roomCode: { 
+//       readyCount: 0, 
+//       players: { 
+//          socketId: { wpm: 0, accuracy: 0 } 
+//       } 
+//    } 
+// }
 const roomState = new Map();
 
 io.on('connection', (socket) => {
@@ -68,16 +76,18 @@ io.on('connection', (socket) => {
         if (roomSize < 2) {
             socket.join(roomCode);
             
-            // Initialize room state if new
+            // 1. Initialize Room State with 'players' object
             if (!roomState.has(roomCode)) {
-                roomState.set(roomCode, { readyCount: 0 });
+                roomState.set(roomCode, { readyCount: 0, players: {} });
             }
+            
+            // 2. Initialize THIS player's stats
+            const room = roomState.get(roomCode);
+            room.players[socket.id] = { wpm: 0, accuracy: 0 };
 
             socket.emit('room_joined', { roomCode });
 
-            // If room is full, tell everyone "Waiting for Ready"
             if (roomSize + 1 === 2) {
-                // Pick text immediately so they can see it (blurred) or just wait
                 const randomText = PARAGRAPHS[Math.floor(Math.random() * PARAGRAPHS.length)];
                 io.to(roomCode).emit('update_text', randomText);
                 io.to(roomCode).emit('players_connected_wait_ready', true); 
@@ -87,38 +97,43 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- NEW: Handle Ready Button ---
     socket.on('player_ready', (roomCode) => {
         const state = roomState.get(roomCode);
         if (state) {
             state.readyCount += 1;
-            
-            // Notify room that one player is ready
             io.to(roomCode).emit('opponent_ready_alert', state.readyCount);
 
-            // If BOTH are ready (2), start countdown
             if (state.readyCount >= 2) {
-                state.readyCount = 0; // Reset for next time
+                state.readyCount = 0; 
                 startCountdown(roomCode);
             }
         }
     });
 
-    // --- UPDATED: Send Progress + Stats ---
+    // --- UPDATED: STORE STATS ---
     socket.on('send_progress', (data) => {
-        // data = { roomCode, progressPercent, wpm, accuracy }
+        // 1. Store the stats in the server memory
+        const room = roomState.get(data.roomCode);
+        if (room && room.players[socket.id]) {
+            room.players[socket.id].wpm = data.wpm;
+            room.players[socket.id].accuracy = data.accuracy;
+        }
+
+        // 2. Relay to opponent as before
         socket.to(data.roomCode).emit('receive_progress', data);
     });
 
     socket.on('player_finished', (data) => {
         io.to(data.roomCode).emit('game_over', { winnerId: socket.id }); 
     });
+    
+    socket.on('disconnect', () => {
+        // Optional: Cleanup player from state
+    });
 });
 
 function startCountdown(roomCode) {
     let countdown = 10;
-    
-    // 1. The 10s Pre-Game Countdown
     const interval = setInterval(() => {
         io.to(roomCode).emit('timer_update', countdown);
         countdown--;
@@ -126,16 +141,14 @@ function startCountdown(roomCode) {
         if (countdown < 0) {
             clearInterval(interval);
             io.to(roomCode).emit('start_race', true);
-            
-            // 2. Start the 120s Game Timer immediately after race starts
             startGameTimer(roomCode);
         }
     }, 1000);
 }
 
-// --- NEW: The 120s Game Timer ---
+// --- UPDATED: DECIDE WINNER ON TIMEOUT ---
 function startGameTimer(roomCode) {
-    let gameTime = 120; // 120 Seconds
+    let gameTime = 120; 
     
     const gameInterval = setInterval(() => {
         io.to(roomCode).emit('game_timer_update', gameTime);
@@ -143,7 +156,27 @@ function startGameTimer(roomCode) {
 
         if (gameTime < 0) {
             clearInterval(gameInterval);
-            io.to(roomCode).emit('game_over', { winnerId: null, timeout: true }); // Time's up!
+            
+            // CALCULATE WINNER BASED ON SCORE (WPM * ACCURACY)
+            const room = roomState.get(roomCode);
+            let winnerId = null;
+            let maxScore = -1;
+
+            if (room && room.players) {
+                Object.keys(room.players).forEach(socketId => {
+                    const p = room.players[socketId];
+                    // The Secret Calculation
+                    const score = (p.wpm || 0) * (p.accuracy || 0);
+                    
+                    if (score > maxScore) {
+                        maxScore = score;
+                        winnerId = socketId;
+                    }
+                });
+            }
+
+            // Send the calculated winnerId even if it was a timeout
+            io.to(roomCode).emit('game_over', { winnerId: winnerId, timeout: true }); 
         }
     }, 1000);
 }
