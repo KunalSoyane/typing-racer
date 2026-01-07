@@ -2,8 +2,7 @@ import './App.css';
 import io from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
-// CHANGE THIS URL IF DEPLOYED! Use "http://localhost:3001" for local testing.
-const socket = io.connect("http://localhost:3001");
+const socket = io.connect("https://typing-racer-exgr.onrender.com/");
 
 function App() {
   const [room, setRoom] = useState("");
