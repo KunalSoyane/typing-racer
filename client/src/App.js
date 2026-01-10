@@ -1,11 +1,9 @@
-/* client/src/App.js */
 import './App.css';
 import io from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
-// CHANGE TO YOUR RENDER URL FOR PRODUCTION
-// const socket = io.connect("https://your-render-app.onrender.com");
-const socket = io.connect("typing-racer-git-main-kunal-soyanes-projects.vercel.app"); 
+// CHANGE THIS TO YOUR RENDER URL IF DEPLOYING
+const socket = io.connect("http://localhost:3001"); 
 
 function App() {
   const [room, setRoom] = useState("");
@@ -182,7 +180,7 @@ function App() {
             {gameStart && !winner && <div className="game-timer">{gameTimer}s</div>}
           </div>
 
-          {/* --- WINNER BANNER (SHOWS FINAL WPM, NO CHAR COUNT) --- */}
+          {/* --- WINNER BANNER (SHOWS FINAL WPM) --- */}
           {winner && (
             <div className={`result-banner ${winner === "Me" ? "win" : winner === "Opponent" ? "lose" : "draw"}`}>
                 <h1>{winner === "Me" ? "🏆 VICTORY!" : winner === "Opponent" ? "💀 DEFEAT" : "🤝 DRAW"}</h1>
