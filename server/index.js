@@ -1,4 +1,3 @@
-/* server/index.js */
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -16,9 +15,9 @@ const io = new Server(server, {
 });
 
 const PARAGRAPHS = [
-    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees.",
-    "Technology has revolutionized the way we communicate, breaking down geographical barriers that once isolated communities. With the click of a button, we can instantly share thoughts, images, and videos.",
-    "The old library was a sanctuary of silence and knowledge, with shelves that stretched all the way to the high, vaulted ceiling. Dust motes danced in the shafts of light filtering through the stained-glass windows.",
+    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies.",
+    "Technology has revolutionized the way we communicate, breaking down geographical barriers that once isolated communities. With the click of a button, we can instantly share thoughts.",
+    "The old library was a sanctuary of silence and knowledge, with shelves that stretched all the way to the high, vaulted ceiling. Dust motes danced in the shafts of light.",
     "Space exploration represents the pinnacle of human curiosity and engineering, pushing the boundaries of what is possible. Astronauts train for years to endure the harsh conditions of zero gravity.",
     "Coding is often compared to solving a complex puzzle, where every piece must fit perfectly for the picture to be complete. A single missing semicolon or a misspelled variable can cause the entire program to crash."
 ];
