@@ -1,23 +1,27 @@
+/* client/src/App.js */
 import './App.css';
 import io from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
-const socket = io.connect("https://typing-racer-exgr.onrender.com/");
+// CHANGE TO YOUR RENDER URL FOR PRODUCTION
+// const socket = io.connect("https://your-render-app.onrender.com");
+const socket = io.connect("http://localhost:3001"); 
 
 function App() {
   const [room, setRoom] = useState("");
   const [isJoined, setIsJoined] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
   
   // Game States
-  const [timer, setTimer] = useState(null);       // The 10s Countdown
-  const [gameTimer, setGameTimer] = useState(120); // The 120s Race Timer
+  const [timer, setTimer] = useState(null);       // 10s Countdown
+  const [gameTimer, setGameTimer] = useState(120); // 120s Race Timer
   const [gameStart, setGameStart] = useState(false);
-  const [bothConnected, setBothConnected] = useState(false); // Wait for opponent
-  const [isMyReady, setIsMyReady] = useState(false); // Did I click ready?
+  const [bothConnected, setBothConnected] = useState(false);
+  const [isMyReady, setIsMyReady] = useState(false);
   
   // Data
   const [paragraph, setParagraph] = useState("");
-  const [userInput, setUserInput] = useState("");
+  const [userInput, setUserInput] = useState(""); 
   const [winner, setWinner] = useState(null); 
   
   // Stats (Me)
@@ -30,12 +34,17 @@ function App() {
   const [oppWpm, setOppWpm] = useState(0);
   const [oppAccuracy, setOppAccuracy] = useState(100);
 
-  // Helper to calculate WPM correctly
   const startTimeRef = useRef(null); 
+  const inputRef = useRef(null); 
 
   useEffect(() => {
-    socket.on("room_joined", () => setIsJoined(true));
+    socket.on("room_joined", () => {
+        setIsJoined(true);
+        setErrorMsg("");
+    });
     
+    socket.on("error_message", (msg) => setErrorMsg(msg)); 
+
     socket.on("update_text", (text) => setParagraph(text));
 
     socket.on("players_connected_wait_ready", () => setBothConnected(true));
@@ -44,8 +53,9 @@ function App() {
 
     socket.on("start_race", () => {
       setGameStart(true);
-      setTimer("GO!");
-      startTimeRef.current = Date.now(); // Start the stopwatch for WPM
+      setTimer(null);
+      startTimeRef.current = Date.now();
+      setTimeout(() => inputRef.current?.focus(), 100);
     });
 
     socket.on("game_timer_update", (time) => setGameTimer(time));
@@ -57,24 +67,26 @@ function App() {
     });
 
     socket.on("game_over", (data) => {
-      // Logic: If the server picked a winner (even if time ran out), show it.
+      // 1. UPDATE STATS WITH SERVER RECALCULATION
+      if (data.players && data.players[socket.id]) {
+          setMyWpm(data.players[socket.id].wpm);
+          setMyAccuracy(data.players[socket.id].accuracy);
+      }
+
+      // 2. SET WINNER
       if (data.winnerId) {
-          if (data.winnerId === socket.id) {
-            setWinner("Me");
-          } else {
-            setWinner("Opponent");
-          }
+          setWinner(data.winnerId === socket.id ? "Me" : "Opponent");
       } else {
-          // Only show Draw if NO ONE had a score (rare)
           setWinner("Draw");
       }
       setTimer("Finished");
     });
 
+    return () => socket.off(); 
   }, []);
 
   const joinRoom = () => {
-    if (room !== "") socket.emit("join_room", room);
+    if (room.trim() !== "") socket.emit("join_room", room);
   };
 
   const handleReady = () => {
@@ -85,41 +97,37 @@ function App() {
   const calculateStats = (inputVal) => {
     if (!startTimeRef.current) return;
 
-    // 1. Accuracy Logic
     let correctChars = 0;
     for (let i = 0; i < inputVal.length; i++) {
         if (inputVal[i] === paragraph[i]) correctChars++;
     }
     const accuracy = Math.round((correctChars / inputVal.length) * 100) || 100;
-
-    // 2. WPM Logic (Standard: 5 chars = 1 word)
     const timeElapsedMin = (Date.now() - startTimeRef.current) / 60000;
     const wpm = Math.round((inputVal.length / 5) / timeElapsedMin) || 0;
 
-    return { wpm, accuracy };
+    return { wpm, accuracy, correctChars };
   };
 
   const handleTyping = (e) => {
-    if (winner) return;
+    if (winner || !gameStart) return;
 
     const value = e.target.value;
     setUserInput(value);
 
-    // Calculate Stats
     const stats = calculateStats(value);
     setMyWpm(stats?.wpm || 0);
     setMyAccuracy(stats?.accuracy || 100);
 
-    // Progress
     const percentage = Math.floor((value.length / paragraph.length) * 100);
     setMyProgress(percentage);
 
-    // Send Everything to Server
     socket.emit("send_progress", { 
         roomCode: room, 
         progressPercent: percentage,
         wpm: stats?.wpm,
-        accuracy: stats?.accuracy 
+        accuracy: stats?.accuracy,
+        charCount: value.length,
+        correctChars: stats?.correctChars 
     });
 
     if (value === paragraph) {
@@ -127,76 +135,94 @@ function App() {
     }
   };
 
+  const renderParagraph = () => {
+    return paragraph.split("").map((char, index) => {
+      let className = "char";
+      const typedChar = userInput[index];
+
+      if (typedChar === undefined) {
+        if (index === userInput.length) className += " active"; 
+      } else if (typedChar === char) {
+        className += " correct";
+      } else {
+        className += " incorrect";
+      }
+
+      return (
+        <span key={index} className={className}>
+          {char}
+        </span>
+      );
+    });
+  };
+
   return (
     <div className="App">
-      <h1>Type Racer Pro</h1>
+      <h1>🏁 Type Racer Pro</h1>
 
       {!isJoined ? (
-        <div className="lobby">
-          <input type="text" placeholder="Enter Room (e.g. 123)" onChange={(e) => setRoom(e.target.value)} />
-          <button onClick={joinRoom}>Join Room</button>
+        <div className="lobby-container">
+          <h3>Enter Race Arena</h3>
+          <div className="input-group">
+            <input 
+                className="room-input"
+                type="text" 
+                placeholder="Room Code (e.g. 505)" 
+                onChange={(e) => setRoom(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && joinRoom()}
+            />
+            <button className="join-btn" onClick={joinRoom}>JOIN</button>
+          </div>
+          {errorMsg && <p className="error-msg">{errorMsg}</p>}
         </div>
       ) : (
         <div className="game-area">
           <div className="stats-board">
-            <h2>Room: {room}</h2>
-            {/* Show 120s Timer only when race starts */}
-            {gameStart && <h3 className="game-timer">Time Left: {gameTimer}s</h3>}
+            <div className="room-id">ROOM: {room}</div>
+            {gameStart && !winner && <div className="game-timer">{gameTimer}s</div>}
           </div>
 
-          {/* WAITING AREA: Show Ready Button */}
-          {!gameStart && bothConnected && !winner && (
-              <div className="ready-area">
-                  <p>Opponent found!</p>
-                  {!isMyReady ? (
-                      <button className="ready-btn" onClick={handleReady}>I'M READY</button>
+          {/* --- WINNER BANNER (SHOWS FINAL WPM, NO CHAR COUNT) --- */}
+          {winner && (
+            <div className={`result-banner ${winner === "Me" ? "win" : winner === "Opponent" ? "lose" : "draw"}`}>
+                <h1>{winner === "Me" ? "🏆 VICTORY!" : winner === "Opponent" ? "💀 DEFEAT" : "🤝 DRAW"}</h1>
+                <p>
+                  Final WPM: {myWpm} | Accuracy: {myAccuracy}%
+                </p>
+            </div>
+          )}
+
+          {!gameStart && !winner && (
+              <div className="ready-section">
+                  {!bothConnected ? (
+                      <p>Waiting for opponent to join...</p>
+                  ) : timer ? (
+                      <div className="countdown-overlay">{timer}</div>
                   ) : (
-                      <button className="ready-btn disabled" disabled>WAITING FOR OPPONENT...</button>
+                      <>
+                        <p>Opponent is here! Ready to race?</p>
+                        <button 
+                            className={`ready-btn ${isMyReady ? "waiting" : ""}`} 
+                            onClick={handleReady} 
+                            disabled={isMyReady}
+                        >
+                            {isMyReady ? "WAITING FOR OPPONENT..." : "I'M READY!"}
+                        </button>
+                      </>
                   )}
-                  {timer !== null && <h1 className="countdown">{timer}</h1>}
               </div>
           )}
 
-          {/* Waiting for 2nd player */}
-          {!bothConnected && <p>Waiting for another player to join...</p>}
-
-          {/* GAME AREA */}
-          <div className="progress-container">
-            <div className="player-stat-row">
-                <span>You (WPM: {myWpm} | Acc: {myAccuracy}%)</span>
-            </div>
-            <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{width: `${myProgress}%`, background: 'green'}}></div>
-            </div>
-            
-            <div className="player-stat-row">
-                <span>Opponent (WPM: {oppWpm} | Acc: {oppAccuracy}%)</span>
-            </div>
-            <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{width: `${oppProgress}%`, background: 'red'}}></div>
-            </div>
-          </div>
-
-          {winner && (
-            <h2 style={{color: winner === "Me" ? "green" : "red"}}>
-                {winner === "Me" ? "🏆 YOU WON!" : winner === "Opponent" ? "💀 YOU LOST!" : "Draw!"}
-            </h2>
-          )}
-
-          {gameStart && (
-             <div className="race-track">
-                <p className="paragraph">{paragraph}</p>
+          {gameStart && !winner && (
+             <div className="typing-area" onClick={() => inputRef.current.focus()}>
+                {renderParagraph()}
                 <textarea 
-                  value={userInput}
-                  onChange={handleTyping}
-                  disabled={!!winner} 
-                  autoFocus
-                  spellCheck="false"
-                  // Turn text red if typo
-                  style={{ 
-                    borderColor: userInput === paragraph.substring(0, userInput.length) ? 'black' : 'red',
-                    color: userInput === paragraph.substring(0, userInput.length) ? 'black' : 'red'
-                  }} 
+                    ref={inputRef}
+                    className="hidden-input"
+                    value={userInput}
+                    onChange={handleTyping}
+                    autoFocus
+                    spellCheck="false"
                 ></textarea>
              </div>
           )}
