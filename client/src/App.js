@@ -1,8 +1,9 @@
+/* client/src/App.js */
 import './App.css';
 import io from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
-// CHANGE THIS TO YOUR RENDER URL IF DEPLOYING
+// ✅ YOUR LIVE RENDER URL IS NOW CONFIGURED HERE:
 const socket = io.connect("https://typing-racer-exgr.onrender.com"); 
 
 function App() {
@@ -119,6 +120,7 @@ function App() {
     const percentage = Math.floor((value.length / paragraph.length) * 100);
     setMyProgress(percentage);
 
+    // --- SENDS DATA FOR TIE-BREAKER & RECALCULATION ---
     socket.emit("send_progress", { 
         roomCode: room, 
         progressPercent: percentage,
@@ -180,7 +182,7 @@ function App() {
             {gameStart && !winner && <div className="game-timer">{gameTimer}s</div>}
           </div>
 
-          {/* --- WINNER BANNER (SHOWS FINAL WPM) --- */}
+          {/* --- WINNER BANNER --- */}
           {winner && (
             <div className={`result-banner ${winner === "Me" ? "win" : winner === "Opponent" ? "lose" : "draw"}`}>
                 <h1>{winner === "Me" ? "🏆 VICTORY!" : winner === "Opponent" ? "💀 DEFEAT" : "🤝 DRAW"}</h1>
