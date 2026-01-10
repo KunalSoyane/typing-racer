@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 import { useEffect, useState, useRef } from 'react';
 
 // CHANGE THIS TO YOUR RENDER URL IF DEPLOYING
-const socket = io.connect("http://localhost:3001"); 
+const socket = io.connect("typing-racer-git-main-kunal-soyanes-projects.vercel.app"); 
 
 function App() {
   const [room, setRoom] = useState("");
