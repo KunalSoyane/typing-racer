@@ -21,8 +21,8 @@ client.connect()
         console.log("✅ Connected to Render PostgreSQL");
 
         // ⚠️ UN-COMMENT THIS LINE TO CLEAR DATABASE -> RUN CODE -> THEN DELETE THIS LINE
-        await client.query('TRUNCATE TABLE game_results'); 
-        console.log("🔥 Database Cleared (Truncated)");
+        //await client.query('TRUNCATE TABLE game_results'); 
+        //console.log("🔥 Database Cleared (Truncated)");
         
         const createTableQuery = `
             CREATE TABLE IF NOT EXISTS game_results (
