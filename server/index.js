@@ -259,7 +259,7 @@ io.on('connection', (socket) => {
 });
 
 function startCountdown(roomCode) {
-    let countdown = 10;
+    let countdown = 5;
     const interval = setInterval(() => {
         io.to(roomCode).emit('timer_update', countdown);
         countdown--;
