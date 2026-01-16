@@ -209,7 +209,7 @@ function App() {
                   <tbody>
                       {historyData.map((game, index) => (
                           <tr key={index} style={{textAlign:'center', height:'40px'}}>
-                              <td>{new Date(game.startTime).toLocaleString()}</td>
+                              <td>{new Date(game.startTime).toLocaleString("en-IN", { timeZone: "Asia/Kolkata",  dateStyle: "medium", timeStyle: "medium" })}</td>
                               <td>{game.playerName}</td>
                               <td>{game.roomCode}</td>
                               <td style={{
