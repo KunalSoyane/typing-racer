@@ -3,46 +3,188 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { Client } = require('pg'); 
 
 const app = express();
 app.use(cors());
 
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: {
-        origin: "*", 
-        methods: ["GET", "POST"]
+// --- CONNECT TO RENDER POSTGRESQL ---
+const DB_URL = "postgresql://type_racer_user:TXP3G1D3SiENAxgaE5cc8rQAhod0grJz@dpg-d5itc975r7bs73dlo1ag-a.singapore-postgres.render.com/type_racer";
+
+const client = new Client({
+    connectionString: DB_URL,
+    ssl: { rejectUnauthorized: false } 
+});
+
+client.connect()
+    .then(async () => {
+        console.log("✅ Connected to Render PostgreSQL");
+        
+        const createTableQuery = `
+            CREATE TABLE IF NOT EXISTS game_results (
+                id SERIAL PRIMARY KEY,
+                player_name TEXT,
+                room_code TEXT,
+                wpm INTEGER,
+                accuracy INTEGER,
+                result TEXT,
+                start_time TIMESTAMP,
+                date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        await client.query(createTableQuery);
+        // Ensure columns exist for older DBs
+        await client.query(`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS accuracy INTEGER;`);
+        await client.query(`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS start_time TIMESTAMP;`);
+        console.log("✅ Database Synced");
+    })
+    .catch(err => console.error("❌ DB Error:", err));
+
+app.get("/api/history", async (req, res) => {
+    try {
+        const result = await client.query('SELECT * FROM game_results ORDER BY start_time DESC LIMIT 50');
+        const formattedData = result.rows.map(row => ({
+            playerName: row.player_name,
+            roomCode: row.room_code,
+            wpm: row.wpm,
+            accuracy: row.accuracy,
+            result: row.result,
+            startTime: row.start_time || row.date 
+        }));
+        res.json(formattedData);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch data" });
     }
 });
 
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+});
+
 const PARAGRAPHS = [
-    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees.",
-    "Technology has revolutionized the way we communicate, breaking down geographical barriers that once isolated communities. With the click of a button, we can instantly share thoughts, images, and videos.",
-    "The old library was a sanctuary of silence and knowledge, with shelves that stretched all the way to the high, vaulted ceiling. Dust motes danced in the shafts of light filtering through the stained-glass windows.",
-    "Space exploration represents the pinnacle of human curiosity and engineering, pushing the boundaries of what is possible. Astronauts train for years to endure the harsh conditions of zero gravity.",
-    "Coding is often compared to solving a complex puzzle, where every piece must fit perfectly for the picture to be complete. A single missing semicolon or a misspelled variable can cause the entire program to crash."
+    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village.",
+    "Technology has revolutionized the way we communicate, breaking down geographical barriers.",
+    "The old library was a sanctuary of silence and knowledge, with shelves that stretched to the ceiling.",
+    "Space exploration represents the pinnacle of human curiosity and engineering.",
+    "Coding is often compared to solving a complex puzzle, where every piece must fit perfectly."
 ];
 
-// roomState = { roomCode: { readyCount: 0, players: { socketId: { wpm, accuracy, charCount, correctChars } } } }
 const roomState = new Map();
+
+// --- 🛠️ ROBUST END GAME LOGIC (Prevents Fake Wins) ---
+async function endGame(roomCode, triggerPlayerId) {
+    const room = roomState.get(roomCode);
+    if (!room || room.isGameOver) return; 
+
+    room.isGameOver = true;
+    clearInterval(room.timerInterval);
+
+    let winnerId = null;
+    let maxScore = -1;
+
+    // 1. Calculate Scores for Everyone
+    Object.keys(room.players).forEach(socketId => {
+        const p = room.players[socketId];
+        
+        // If it was a timeout (triggerPlayerId is null), force recalculate WPM based on full time
+        if (!triggerPlayerId) {
+            p.wpm = Math.round((p.charCount || 0) / 5 / 2); 
+        }
+
+        const score = (p.wpm || 0) * (p.accuracy || 0);
+        p.finalScore = score; 
+    });
+
+    // 2. Determine Valid Winner
+    if (triggerPlayerId) {
+        // Validation: Did the person who "finished" actually have the best score?
+        // This prevents the "8 WPM beats 30 WPM" bug.
+        
+        let highestScore = -1;
+        let bestStatsId = null;
+        
+        Object.keys(room.players).forEach(sid => {
+            if (room.players[sid].finalScore > highestScore) {
+                highestScore = room.players[sid].finalScore;
+                bestStatsId = sid;
+            }
+        });
+
+        // If the finisher's score is suspiciously low compared to the leader, ignore their claim
+        if (room.players[triggerPlayerId].finalScore < highestScore) {
+             console.log(`⚠️ Invalid Win Detected! Finisher: ${triggerPlayerId} (Score: ${room.players[triggerPlayerId].finalScore}), Leader: ${bestStatsId} (Score: ${highestScore})`);
+             winnerId = bestStatsId; // Give win to the actual high scorer
+        } else {
+             winnerId = triggerPlayerId;
+        }
+
+    } else {
+        // Timeout Case: Find max score
+        Object.keys(room.players).forEach(socketId => {
+            const p = room.players[socketId];
+            if (p.finalScore > maxScore) {
+                maxScore = p.finalScore;
+                winnerId = socketId;
+            } else if (p.finalScore === maxScore) {
+                const currentWinner = room.players[winnerId];
+                if (p.correctChars > (currentWinner?.correctChars || 0)) {
+                    winnerId = socketId;
+                }
+            }
+        });
+    }
+
+    // 3. Save to DB
+    try {
+        const insertQuery = `
+            INSERT INTO game_results (player_name, room_code, wpm, accuracy, result, start_time)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `;
+
+        for (const socketId of Object.keys(room.players)) {
+            const p = room.players[socketId];
+            let resultStatus = "Lost";
+            if (socketId === winnerId) resultStatus = "Won";
+
+            await client.query(insertQuery, [
+                p.name, roomCode, p.wpm, p.accuracy, resultStatus, room.startTime
+            ]);
+        }
+        console.log(`✅ Game Saved. Winner: ${winnerId}`);
+    } catch (err) {
+        console.error("Error saving stats:", err);
+    }
+
+    // 4. Send Results
+    io.to(roomCode).emit('game_over', { 
+        winnerId: winnerId, 
+        players: room.players 
+    });
+}
 
 io.on('connection', (socket) => {
     console.log(`User Connected: ${socket.id}`);
 
-    socket.on('join_room', (roomCode) => {
+    socket.on('join_room', ({ roomCode, playerName }) => {
         const roomSize = io.sockets.adapter.rooms.get(roomCode)?.size || 0;
 
         if (roomSize < 2) {
             socket.join(roomCode);
-            
             if (!roomState.has(roomCode)) {
-                roomState.set(roomCode, { readyCount: 0, players: {} });
+                roomState.set(roomCode, { 
+                    readyCount: 0, 
+                    players: {}, 
+                    startTime: null, 
+                    timerInterval: null, 
+                    isGameOver: false 
+                });
             }
-            
-            // Init stats
             const room = roomState.get(roomCode);
-            room.players[socket.id] = { wpm: 0, accuracy: 0, charCount: 0, correctChars: 0 };
-
+            room.players[socket.id] = { 
+                name: playerName || `Player-${socket.id.substr(0,4)}`, 
+                wpm: 0, accuracy: 0, charCount: 0, correctChars: 0 
+            };
             socket.emit('room_joined', { roomCode });
 
             if (roomSize + 1 === 2) {
@@ -68,7 +210,7 @@ io.on('connection', (socket) => {
 
     socket.on('send_progress', (data) => {
         const room = roomState.get(data.roomCode);
-        if (room && room.players[socket.id]) {
+        if (room && !room.isGameOver && room.players[socket.id]) {
             room.players[socket.id].wpm = data.wpm;
             room.players[socket.id].accuracy = data.accuracy;
             room.players[socket.id].charCount = data.charCount;
@@ -78,7 +220,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('player_finished', (data) => {
-        io.to(data.roomCode).emit('game_over', { winnerId: socket.id }); 
+        endGame(data.roomCode, socket.id);
     });
 });
 
@@ -89,67 +231,24 @@ function startCountdown(roomCode) {
         countdown--;
         if (countdown < 0) {
             clearInterval(interval);
+            const room = roomState.get(roomCode);
+            if (room) room.startTime = new Date();
             io.to(roomCode).emit('start_race', true);
             startGameTimer(roomCode);
         }
     }, 1000);
 }
 
-// --- UPDATED TIMER LOGIC ---
 function startGameTimer(roomCode) {
-    let gameTime = 120; // 120 Seconds
+    let gameTime = 120; 
+    const room = roomState.get(roomCode);
     
-    const gameInterval = setInterval(() => {
+    room.timerInterval = setInterval(() => {
         io.to(roomCode).emit('game_timer_update', gameTime);
         gameTime--;
 
         if (gameTime < 0) {
-            clearInterval(gameInterval);
-            
-            const room = roomState.get(roomCode);
-            let winnerId = null;
-            let maxScore = -1;
-            let maxChars = -1;
-            let isDraw = false;
-
-            if (room && room.players) {
-                Object.keys(room.players).forEach(socketId => {
-                    const p = room.players[socketId];
-                    
-                    // 1. RECALCULATE WPM (Based on full 2 minutes)
-                    const finalWpm = Math.round((p.charCount || 0) / 5 / 2);
-                    p.wpm = finalWpm; // Update the server state
-
-                    // 2. CALCULATE SCORE
-                    const score = (p.wpm || 0) * (p.accuracy || 0);
-                    const chars = p.correctChars || 0;
-                    
-                    if (score > maxScore) {
-                        maxScore = score;
-                        maxChars = chars;
-                        winnerId = socketId;
-                        isDraw = false; 
-                    } else if (score === maxScore) {
-                        // TIE BREAKER: Check Correct Characters
-                        if (chars > maxChars) {
-                            maxChars = chars;
-                            winnerId = socketId;
-                            isDraw = false;
-                        } else if (chars === maxChars) {
-                            isDraw = true; 
-                        }
-                    }
-                });
-            }
-
-            if (isDraw) winnerId = null;
-
-            // --- SEND FINAL STATS TO CLIENT ---
-            io.to(roomCode).emit('game_over', { 
-                winnerId: winnerId, 
-                timeout: true,
-                players: room ? room.players : {} // Send the recalculated stats
-            }); 
+            endGame(roomCode, null);
         }
     }, 1000);
 }
