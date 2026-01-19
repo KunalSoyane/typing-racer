@@ -115,7 +115,7 @@ function App() {
 
   const handleAdminLogin = () => {
     const password = prompt("Enter Admin Password:");
-    if (password === "W") {
+    if (password === "ITSA2026") {
         fetchHistory();
     } else if (password !== null) {
         alert("❌ Access Denied: Wrong Password");
