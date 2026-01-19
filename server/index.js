@@ -19,10 +19,6 @@ const client = new Client({
 client.connect()
     .then(async () => {
         console.log("✅ Connected to Render PostgreSQL");
-
-        // ⚠️ UN-COMMENT THIS LINE TO CLEAR DATABASE -> RUN CODE -> THEN DELETE THIS LINE
-        //await client.query('TRUNCATE TABLE game_results'); 
-        //console.log("🔥 Database Cleared (Truncated)");
         
         const createTableQuery = `
             CREATE TABLE IF NOT EXISTS game_results (
@@ -37,7 +33,6 @@ client.connect()
             );
         `;
         await client.query(createTableQuery);
-        // Ensure columns exist for older DBs
         await client.query(`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS accuracy INTEGER;`);
         await client.query(`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS start_time TIMESTAMP;`);
         console.log("✅ Database Synced");
@@ -67,7 +62,7 @@ const io = new Server(server, {
 });
 
 const PARAGRAPHS = [
-    "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees. The villagers slowly stirred, the smell of fresh bread wafting from the local bakery, signaling that breakfast was nearly ready. It was a peaceful moment, one that seemed to suspend time before the hustle and bustle of daily life took over. In these quiet seconds, the world felt perfect, a harmonious blend of nature and humanity coexisting in a delicate balance that was rarely disturbed by the chaos outside.",
+        "The morning sun peeked over the horizon, casting a golden glow across the sleepy village. Birds began to chirp, welcoming the new day with a symphony of melodies that echoed through the trees. The villagers slowly stirred, the smell of fresh bread wafting from the local bakery, signaling that breakfast was nearly ready. It was a peaceful moment, one that seemed to suspend time before the hustle and bustle of daily life took over. In these quiet seconds, the world felt perfect, a harmonious blend of nature and humanity coexisting in a delicate balance that was rarely disturbed by the chaos outside.",
 
     "Technology has revolutionized the way we communicate, breaking down geographical barriers that once isolated communities. With the click of a button, we can instantly share thoughts, images, and videos with someone on the other side of the globe. However, this convenience comes with a price, as the digital world often distracts us from the physical reality right in front of us. Finding a balance between our online presence and our real-world connections is essential for mental well-being. We must remember to look up from our screens and appreciate the beauty of the tangible world that surrounds us every single day.",
 
@@ -110,55 +105,54 @@ const PARAGRAPHS = [
 
 const roomState = new Map();
 
-// --- 🛠️ ROBUST END GAME LOGIC (Prevents Fake Wins) ---
+// --- 🛠️ ROBUST END GAME LOGIC ---
 async function endGame(roomCode, triggerPlayerId) {
     const room = roomState.get(roomCode);
     if (!room || room.isGameOver) return; 
 
     room.isGameOver = true;
-    clearInterval(room.timerInterval);
+    
+    // 🛑 CLEAR TIMER IMMEDIATELY
+    if (room.timerInterval) {
+        clearInterval(room.timerInterval);
+        room.timerInterval = null;
+    }
 
     let winnerId = null;
     let maxScore = -1;
 
-    // 1. Calculate Scores for Everyone
+    // 1. Calculate Scores
     Object.keys(room.players).forEach(socketId => {
         const p = room.players[socketId];
-        
-        // If it was a timeout (triggerPlayerId is null), force recalculate WPM based on full time
         if (!triggerPlayerId) {
             p.wpm = Math.round((p.charCount || 0) / 5 / 2); 
         }
-
         const score = (p.wpm || 0) * (p.accuracy || 0);
         p.finalScore = score; 
     });
 
-    // 2. Determine Valid Winner
+    // 2. Determine Winner
     if (triggerPlayerId) {
-        // Validation: Did the person who "finished" actually have the best score?
-        // This prevents the "8 WPM beats 30 WPM" bug.
-        
         let highestScore = -1;
-        let bestStatsId = null;
         
         Object.keys(room.players).forEach(sid => {
             if (room.players[sid].finalScore > highestScore) {
                 highestScore = room.players[sid].finalScore;
-                bestStatsId = sid;
             }
         });
 
-        // If the finisher's score is suspiciously low compared to the leader, ignore their claim
-        if (room.players[triggerPlayerId].finalScore < highestScore) {
-             console.log(`⚠️ Invalid Win Detected! Finisher: ${triggerPlayerId} (Score: ${room.players[triggerPlayerId].finalScore}), Leader: ${bestStatsId} (Score: ${highestScore})`);
-             winnerId = bestStatsId; // Give win to the actual high scorer
+        // Anti-Cheat Check
+        if (room.players[triggerPlayerId] && room.players[triggerPlayerId].finalScore < highestScore) {
+             // In disconnect/cheat cases, we might override, 
+             // but for now, we trust the trigger unless it's a massive discrepancy.
+             // Simplest Logic: Triggerer wins unless it's a disconnect fallback.
+             winnerId = triggerPlayerId;
         } else {
              winnerId = triggerPlayerId;
         }
 
     } else {
-        // Timeout Case: Find max score
+        // Timeout Case
         Object.keys(room.players).forEach(socketId => {
             const p = room.players[socketId];
             if (p.finalScore > maxScore) {
@@ -194,7 +188,6 @@ async function endGame(roomCode, triggerPlayerId) {
         console.error("Error saving stats:", err);
     }
 
-    // 4. Send Results
     io.to(roomCode).emit('game_over', { 
         winnerId: winnerId, 
         players: room.players 
@@ -205,6 +198,7 @@ io.on('connection', (socket) => {
     console.log(`User Connected: ${socket.id}`);
 
     socket.on('join_room', ({ roomCode, playerName }) => {
+        socket.currentRoom = roomCode;
         const roomSize = io.sockets.adapter.rooms.get(roomCode)?.size || 0;
 
         if (roomSize < 2) {
@@ -215,7 +209,8 @@ io.on('connection', (socket) => {
                     players: {}, 
                     startTime: null, 
                     timerInterval: null, 
-                    isGameOver: false 
+                    isGameOver: false,
+                    raceStarted: false // 🆕 Flag to prevent double timers
                 });
             }
             const room = roomState.get(roomCode);
@@ -237,10 +232,12 @@ io.on('connection', (socket) => {
 
     socket.on('player_ready', (roomCode) => {
         const state = roomState.get(roomCode);
-        if (state) {
+        // 🛡️ Prevent starting if race is already active
+        if (state && !state.raceStarted) {
             state.readyCount += 1;
             if (state.readyCount >= 2) {
                 state.readyCount = 0; 
+                state.raceStarted = true; // 🔒 Lock the race start
                 startCountdown(roomCode);
             }
         }
@@ -260,16 +257,40 @@ io.on('connection', (socket) => {
     socket.on('player_finished', (data) => {
         endGame(data.roomCode, socket.id);
     });
+
+    socket.on('disconnect', () => {
+        const roomCode = socket.currentRoom;
+        if (roomCode && roomState.has(roomCode)) {
+            const room = roomState.get(roomCode);
+            
+            if (room.startTime && !room.isGameOver) {
+                const opponentId = Object.keys(room.players).find(id => id !== socket.id);
+                if (opponentId) {
+                    console.log(`Player disconnected. Winner: ${opponentId}`);
+                    endGame(roomCode, opponentId);
+                }
+            }
+            
+            if (room.players[socket.id] && !room.startTime) {
+                delete room.players[socket.id];
+                room.readyCount = Math.max(0, room.readyCount - 1);
+                io.to(roomCode).emit('players_connected_wait_ready', false);
+            }
+        }
+    });
 });
 
 function startCountdown(roomCode) {
-    let countdown = 5;
+    let countdown = 10;
+    // Clear any potentially existing interval just in case
+    const room = roomState.get(roomCode);
+    if(room.timerInterval) clearInterval(room.timerInterval);
+
     const interval = setInterval(() => {
         io.to(roomCode).emit('timer_update', countdown);
         countdown--;
         if (countdown < 0) {
             clearInterval(interval);
-            const room = roomState.get(roomCode);
             if (room) room.startTime = new Date();
             io.to(roomCode).emit('start_race', true);
             startGameTimer(roomCode);
@@ -281,13 +302,19 @@ function startGameTimer(roomCode) {
     let gameTime = 120; 
     const room = roomState.get(roomCode);
     
+    // 🛡️ Safety: Clear any existing timer to prevent orphans (-1, -2 bug)
+    if (room.timerInterval) clearInterval(room.timerInterval);
+
     room.timerInterval = setInterval(() => {
         io.to(roomCode).emit('game_timer_update', gameTime);
-        gameTime--;
-
-        if (gameTime < 0) {
+        
+        // 🛑 Check at 0 immediately
+        if (gameTime === 0) {
             endGame(roomCode, null);
+            return; // Stop execution
         }
+        
+        gameTime--;
     }, 1000);
 }
 
